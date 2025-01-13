@@ -4,6 +4,7 @@ import json
 import sqlite3
 from datetime import datetime
 import requests
+from openai import OpenAI
 
 class ChatServer:
     def __init__(self, host='0.0.0.0', port=9999):
@@ -13,9 +14,9 @@ class ChatServer:
         self.clients = {}  # {client_socket: username}
         self.db_lock = threading.Lock()
         self.setup_database()
-        # DeepSeek API 配置
-        self.deepseek_api_key = "sk-2a4a714760584638950c829476acced8"  # 需要替换为实际的 API key
-        self.deepseek_api_url = "https://api.deepseek.com/v1/chat/completions"
+        # API 配置
+        self.api_key = "sk-2a4a714760584638950c829476acced8"  # 替换为你的 API key
+        self.api_url = "https://api.deepseek.com/v1/chat/completions"  # 官方 API 地址
         self.bot_name = "Bot助手"
 
     def setup_database(self):
@@ -57,30 +58,65 @@ class ChatServer:
                     self.remove_client(client_socket)
 
     def get_bot_response(self, user_message):
-        """调用 DeepSeek API 获取回复"""
+        """调用 API 获取回复"""
         try:
             headers = {
-                "Authorization": f"Bearer {self.deepseek_api_key}",
+                "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json"
             }
             
             data = {
                 "model": "deepseek-chat",
                 "messages": [
-                    {"role": "user", "content": user_message}
+                    {
+                        "role": "system",
+                        "content": "你是一个友好的聊天助手，请用简短友好的方式回答问题。"
+                    },
+                    {
+                        "role": "user",
+                        "content": user_message
+                    }
                 ],
                 "temperature": 0.7,
-                "max_tokens": 1000
+                "max_tokens": 800,
+                "stream": False
             }
             
-            response = requests.post(self.deepseek_api_url, headers=headers, json=data)
-            if response.status_code == 200:
-                return response.json()['choices'][0]['message']['content']
-            else:
-                return "抱歉，我遇到了一些问题，请稍后再试。"
+            # 使用 OpenAI 格式的 API 调用
+            client = OpenAI(
+                api_key=self.api_key,
+                base_url="https://api.deepseek.com/v1"
+            )
+            
+            try:
+                response = client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=data["messages"],
+                    temperature=data["temperature"],
+                    max_tokens=data["max_tokens"],
+                    stream=False
+                )
+                return response.choices[0].message.content
+            except Exception as api_err:
+                print(f"OpenAI API 调用错误: {str(api_err)}")
+                # 如果 OpenAI SDK 调用失败，回退到直接使用 requests
+                response = requests.post(
+                    self.api_url,
+                    headers=headers,
+                    json=data,
+                    timeout=30
+                )
+                
+                if response.status_code == 200:
+                    return response.json()['choices'][0]['message']['content']
+                else:
+                    error_msg = response.text if response.text else str(response.status_code)
+                    print(f"API Error: Status {response.status_code}, Response: {error_msg}")
+                    return f"抱歉，我遇到了一些问题（错误码：{response.status_code}），请稍后再试。"
+                    
         except Exception as e:
-            print(f"API调用错误: {e}")
-            return "抱歉，服务出现了一些问题。"
+            print(f"API调用错误: {str(e)}")
+            return f"抱歉，服务出现了问题：{str(e)}"
 
     def handle_bot_message(self, message_content, sender):
         """处理机器人消息"""
